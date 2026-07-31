@@ -1,0 +1,26 @@
+name: toonframe_studio
+description: A simple 2D frame-by-frame animation & drawing app.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.6
+  image: ^4.1.7
+  path_provider: ^2.1.2
+  image_picker: ^1.1.2
+  video_player: ^2.9.2
+  video_thumbnail: ^0.5.3
+  archive: ^3.6.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
