@@ -33,6 +33,12 @@ class FrameData {
     if (op is ImageDrawOp) {
       return ImageDrawOp(op.image);
     }
+    if (op is ShapeDrawOp) {
+      return op; // fully immutable (all fields final, value types) - safe to share
+    }
+    if (op is TextDrawOp) {
+      return op; // fully immutable (all fields final, value types) - safe to share
+    }
     throw StateError('Unknown DrawOp type: $op');
   }
 

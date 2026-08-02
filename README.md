@@ -29,14 +29,21 @@ Flutter/Dart).
   opacity, and pick which layer you're drawing on. Layer structure (names/order/count) is shared
   across the whole project — every frame has the same layers, matched by index — so a "Background"
   layer stays a background layer on every frame, while each frame keeps its own strokes per layer.
-  - **Free / Premium tiers** — free projects are capped at **3 layers**; Premium unlocks up to
-    **10**. The layer panel shows the current count against the cap and prompts an upgrade dialog
-    if you hit it. This is backed by a lightweight in-memory `PremiumService` stub with a
-    "simulate purchase" button rather than real billing — see the caveat below.
-  - **Layer merging (Premium only)** — permanently flattens a layer into the one below it on every
-    frame, baking in each layer's opacity/visibility at the time of the merge. Confirms before
-    doing it, since it's destructive (the two layers' individual history can't be recovered
-    afterward).
+  - Capped at **20 layers** per project (`kMaxLayers` in `constants.dart`) — a soft performance
+    limit, not a paywall. This app is fully open source with no premium tier.
+  - **Layer merging** — permanently flattens a layer into the one below it on every frame, baking
+    in each layer's opacity/visibility at the time of the merge. Confirms before doing it, since
+    it's destructive (the two layers' individual history can't be recovered afterward).
+- **Shape tools** — rectangle, ellipse, and line, alongside the freehand pen. Pick a shape from the
+  toolbar's shape-tool popup, drag to draw it (with a live preview as you drag), and toggle
+  filled vs. outline before or after selecting a shape. Shapes are their own op type in a layer's
+  history (`ShapeDrawOp`), same as strokes and fills — undo removes just the last shape, and later
+  strokes/fills layer on top of them normally.
+- **Text tool** — tap the canvas with the text tool active to open a dialog: type your text, pick
+  a size, and it's placed at the tapped point using the current color. Text is its own op type
+  (`TextDrawOp`) — same undo/layering/onion-skin/export behavior as everything else. There's no
+  in-place editing after placement (no drag-to-reposition or re-edit) — undo and re-add if you want
+  to change it.
 - **Frame-by-frame timeline** — a visual filmstrip with live thumbnails (composited across all
   visible layers) for managing frames:
   - **Drag to reorder** — long-press and drag any frame thumbnail to a new position
@@ -56,6 +63,17 @@ Flutter/Dart).
   you're currently drawing. Tap the onion-skin icon in the toolbar to toggle it on/off;
   **long-press it** to open settings for how many frames to ghost on each side (0–4) and overall
   opacity — closer frames stay more opaque, farther ones fade out automatically.
+- **Audio integration** — tap the audio icon (top right) to open the audio panel:
+  - **Import music, SFX, or a voiceover** from the device via the system file picker; imported
+    files are copied into app-private storage so the project doesn't break if the original file
+    moves or gets deleted. (No in-app microphone recording — see "A note on voiceover recording"
+    below for why that was dropped after a real build failure, not skipped by default.)
+  - **Built-in sound library** — five small synthesized SFX (Click, Beep, Ding, Whoosh, Pop). See
+    "A note on the sound library" below for why these are generated rather than a real SFX pack
+  - **Multiple simultaneous tracks**, each with its own volume, mute toggle, and start frame (tap
+    the target icon to set a track's start to wherever the playhead currently is)
+  - Tracks play alongside Play/Pause and restart in sync when the animation loops back to frame 1
+    — see "A note on audio sync" below for the honest limits of that
 - **Playback** — play/pause the flipbook in a loop at the FPS set on the timeline
 - **Undo** and **clear active layer**
 - **GIF export** — renders every frame (compositing all visible layers with their opacity) and
@@ -64,48 +82,81 @@ Flutter/Dart).
 ## What's not included (ideas for you to extend)
 - **iOS MP4 export** — the native encoder is Android-only for now (see "In-app MP4 export"); iOS
   needs a separate `AVAssetWriter`-based implementation in Swift
-- Shape tools (rectangle, ellipse, line)
-- Audio tracks
+- **Lasso select/transform** and **custom brushes** — the two remaining items from the original
+  brushes-and-tools list that aren't built yet. Lasso in particular is a bigger lift than it
+  looks: it needs a selection region, then move/scale/rotate of whatever raster or vector content
+  falls inside it, which doesn't fit the simple "one more DrawOp type" pattern the other tools
+  used here.
+- Trimming/waveform view for audio tracks (a track always plays from its own start to its own end
+  once triggered — no in/out point editing)
+- A real, licensed sound-effect library (see "A note on the sound library")
 - Reposition/rescale an imported reference image after placing it (currently it's letterboxed to
   fill the canvas once, on import)
+- Reposition or re-edit text after placing it (undo and re-add instead)
 - Cloud save / project list (currently one project per session, held in memory)
 - Per-frame layer add/remove (currently layers are global — adding a layer adds it to every frame)
 - The fill runs synchronously on the UI isolate. On a large canvas or slow device you may see a
   brief hitch; if that's noticeable, move `FillService.floodFill`'s work into a background isolate
   via `compute()`.
 
-## Setup notes for the new permissions (photo/video import)
+## Setup notes for permissions (photo/video import, audio)
 
 **Android:** `image_picker` and `video_thumbnail` use the system Photo Picker / native
 thumbnailing on modern Android, which typically doesn't need explicit runtime permissions for
-picking from the gallery. If you target an older `minSdkVersion` or hit permission errors, check
-each plugin's own README for manifest requirements — `flutter create` won't add these
-automatically since this project's `lib/` was written by hand, not scaffolded with the picker
-already wired in.
+picking from the gallery. `file_picker` (used for importing music/SFX/voiceover files) is similar.
+No microphone permission is needed anywhere in this app — see "A note on voiceover recording"
+below for why in-app recording isn't included. If you target an older `minSdkVersion` or hit
+permission errors from any of these pickers, check each plugin's own README for manifest
+requirements — `flutter create` won't add these automatically since this project's `lib/` was
+written by hand, not scaffolded with the pickers already wired in.
 
-**iOS:** you'll need to add these keys to `ios/Runner/Info.plist` (generated by `flutter create`,
-not included in this zip) for the photo/video picker to work:
+**iOS:** you'll need to add this key to `ios/Runner/Info.plist` (generated by `flutter create`,
+not included in this zip):
 ```xml
 <key>NSPhotoLibraryUsageInfo</key>
 <string>To import a reference photo or video for tracing.</string>
 ```
 
-## A note on the free/premium layer gating
-`PremiumService` is **not real billing** — it's a single in-memory `ValueNotifier<bool>` that a
-"Simulate purchase" button flips on. It resets every time the app restarts (nothing persists to
-disk). This was a deliberate scope choice: wiring up real App Store / Google Play billing needs
-store-side setup (registering product IDs, tax/banking info, signing) that has to happen in each
-developer console, not in source code. When you're ready for that:
-- Add the `in_app_purchase` package
-- Set `PremiumService.instance.isPremium.value = true` from its purchase-successful callback
-  instead of from `PremiumService.unlock()`
-- Everything else (`_maxLayers`, the paywall dialogs, the layer-merge gate) already reads
-  `PremiumService.instance.isPremium` and doesn't need to change.
+## A note on voiceover recording
+This originally used the `record` package for in-app microphone recording. **It doesn't build**:
+a real test run hit a version-skew bug where `record_linux` 0.7.2 doesn't implement methods that
+`record_platform_interface` 1.6.0 (which pub resolved alongside it) requires — a genuine bug in
+that package combination, not a config issue on your end. Given this project already hit one
+native-plugin dead end (see "In-app MP4 export" below, about `ffmpeg_kit_flutter`), I didn't want
+to gamble on a version pin I can't verify from this sandbox for a second one. So: voiceovers are
+imported like any other audio file instead of recorded in-app — record with your phone's own voice
+memo app, then use "Import voiceover" in the audio panel. If you want real in-app recording, the
+`record` package (or an alternative like `flutter_sound`) is the natural place to add it back — just
+verify whatever version you land on actually builds before relying on it, given the history here.
 
-Also worth knowing: `LayerMergeService.mergeDown` rasterizes both merged layers' current
-opacity/visibility into a flattened image per frame — it's a genuine flatten operation (like merge
-in any drawing app), not just a metadata change, so the confirmation dialog before merging isn't
-just a formality.
+## A note on the sound library
+The five built-in SFX (Click, Beep, Ding, Whoosh, Pop) are synthesized at runtime in pure Dart
+(`lib/utils/wav_synth.dart` - basic sine waves, noise bursts, and envelopes, written straight to
+WAV bytes) rather than bundled audio files. That's a deliberate choice, not a shortcut I'd have
+preferred to skip: I have no way to source or verify licensing for real audio assets from this
+sandbox, and shipping someone else's SFX pack without being certain of its license isn't a risk
+worth taking on your behalf. They work, they're genuinely useful placeholder sounds, but they
+won't sound like a polished commercial SFX library. If you want real ones, drop licensed `.wav`/
+`.mp3` files into an `assets/audio/` folder, declare them in `pubspec.yaml`'s `flutter: assets:`
+section, and add matching entries to `AudioLibraryService.items`.
+
+## A note on audio sync
+Playback sync between the animation and audio tracks is driven by the same `Timer.periodic` that
+already advances frames (see `EditorScreen._togglePlay`) — there's no shared audio/video clock.
+Each track is seeked to the right offset when it starts and restarted fresh whenever the animation
+loops back to frame 1, which keeps drift from accumulating indefinitely, but within a single loop
+pass, timing can drift by however much `Timer.periodic` itself drifts (a well-known limitation of
+Dart's timer under system load - not unique to this code). Fine for short animations with music/
+SFX/voiceover that doesn't need frame-perfect sync; if you need tighter guarantees for longer
+pieces, you'd want to replace the frame timer with a proper shared clock (e.g. driving both frame
+advancement and audio position off `Stopwatch` elapsed time each tick, rather than just counting
+timer fires).
+
+## A note on layer merging
+`LayerMergeService.mergeDown` rasterizes both merged layers' current opacity/visibility into a
+flattened image per frame — it's a genuine flatten operation (like merge in any drawing app), not
+just a metadata change, so the confirmation dialog before merging isn't just a formality. It's
+available to everyone, with no gating — this project is open source.
 
 ## A note on the timeline's drag-to-reorder
 `ReorderableListView.builder` with `scrollDirection: Axis.horizontal` is what drives dragging
@@ -177,10 +228,15 @@ message and points you at PNG-sequence export instead — it won't crash, just g
   masking (rather than tracing by eye over a flat reference image)
 - Let the user drag/scale an imported reference image instead of always auto-fitting it to the
   full canvas
-- Add a shape tool (rectangle/ellipse/line) alongside the fill bucket
 - Move the fill-bucket computation off the UI isolate via `compute()`
 - Let layers be added/removed per-frame instead of project-wide, if you want independent layer
   counts per frame (would need a per-frame layer list instead of the shared `project.layers`)
+- Add trim (in/out point) controls and a waveform preview to audio tracks
+- Add real in-app voiceover recording (see "A note on voiceover recording" for why it isn't here
+  yet, and what to verify before adding it back)
+- Show audio track markers on the timeline itself (currently the audio panel is the only place
+  a track's start frame is visible)
+- Build lasso select/transform and custom brushes, the two remaining brushes-and-tools items
 
 ## Project structure
 ```
@@ -188,32 +244,38 @@ lib/
   constants.dart              # fixed internal canvas resolution
   models/
     stroke.dart                # a single pen/eraser stroke
-    draw_op.dart                # StrokeDrawOp / FillDrawOp / ImageDrawOp, in order per layer
-    draw_tool.dart              # DrawTool enum: pen / eraser / fill
+    draw_op.dart                # StrokeDrawOp / ShapeDrawOp / TextDrawOp / FillDrawOp / ImageDrawOp
+    draw_tool.dart              # DrawTool enum: pen / eraser / fill / shape / text
+    shape_kind.dart              # ShapeKind enum: rectangle / ellipse / line
     layer_info.dart             # per-layer name/visibility/opacity (global, shared by all frames)
     onion_skin_settings.dart    # onion skin: enabled, frame range before/after, opacity
     frame_data.dart            # per-layer DrawOp lists for one frame
-    animation_project.dart     # layer stack + list of frames + fps + Reference-layer helper
+    animation_project.dart     # layer stack + list of frames + audio tracks + fps + Reference-layer helper
+    audio_track.dart            # AudioTrack: music/SFX/voiceover clip, volume/mute/start frame
   rendering/
     frame_renderer.dart         # shared paint logic: canvas, thumbnails, fill rasterizer, export
     onion_layer.dart            # a single ghosted frame + tint + opacity for onion skinning
   utils/
     image_utils.dart            # decode + letterbox-fit arbitrary image bytes to canvas size
+    wav_synth.dart               # pure-Dart synthesized WAV clips for the built-in sound library
   widgets/
     frame_painter.dart         # CustomPainter wrapper around FrameRenderer
     drawing_canvas.dart        # gesture handling -> strokes on the active layer, or fill taps
     layers_panel.dart          # bottom sheet: select/reorder/toggle/opacity/add/delete layers
     onion_skin_panel.dart       # bottom sheet: onion skin on/off, frame range, opacity
+    audio_panel.dart             # bottom sheet: import audio, sound library, per-track controls
     timeline_strip.dart        # bottom filmstrip UI
     editor_toolbar.dart        # pen/eraser/fill/color/undo/layers/play controls
   services/
     fill_service.dart          # rasterize a layer + flood fill (paint bucket)
-    layer_merge_service.dart   # flatten a layer down into the one below it (premium)
-    premium_service.dart       # in-memory free/premium status stub (see caveat below)
+    layer_merge_service.dart   # flatten a layer down into the one below it
     rotoscope_import_service.dart  # pick photo/video, extract & fit reference frames
     export_service.dart        # rasterize composited frames -> GIF / PNG-sequence ZIP
     native_video_encoder.dart  # MethodChannel wrapper -> android_native/Mp4Encoder.kt
     native_mp4_export_service.dart  # render frames -> temp PNGs -> hand off to native encoder
+    audio_import_service.dart   # pick an audio file (music/SFX/voiceover), copy into app-private storage
+    audio_library_service.dart  # the built-in synthesized SFX library, cached to disk
+    audio_playback_service.dart # plays AudioTracks in sync with animation play/pause/loop
   screens/
     home_screen.dart
     editor_screen.dart         # wires everything together: playback, import/export menus, state

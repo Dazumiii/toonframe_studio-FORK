@@ -5,16 +5,15 @@ import '../models/animation_project.dart';
 /// Layers are shown topmost-first (matching how most drawing apps list
 /// them), even though they're stored bottom-first internally.
 ///
-/// This widget doesn't decide whether adding a layer or merging two
-/// layers is *allowed* (free-tier limits, premium gating) - it just
+/// This widget doesn't decide whether adding a layer is allowed (the
+/// soft cap in [kMaxLayers]) or perform the merge itself - it just
 /// asks the parent via [onAddLayerRequested] / [onMergeDownRequested]
-/// and refreshes itself afterward. That keeps all the premium/paywall
-/// logic in one place (the editor screen) instead of duplicated here.
+/// and refreshes itself afterward. That keeps that logic in one place
+/// (the editor screen) instead of duplicated here.
 class LayersPanel extends StatefulWidget {
   final AnimationProject project;
   final int activeLayerIndex;
   final int maxLayers;
-  final bool isPremium;
   final ValueChanged<int> onSelectLayer;
   final VoidCallback onAddLayerRequested;
   final Future<void> Function(int index) onMergeDownRequested;
@@ -28,7 +27,6 @@ class LayersPanel extends StatefulWidget {
     required this.project,
     required this.activeLayerIndex,
     required this.maxLayers,
-    required this.isPremium,
     required this.onSelectLayer,
     required this.onAddLayerRequested,
     required this.onMergeDownRequested,
@@ -73,10 +71,6 @@ class _LayersPanelState extends State<LayersPanel> {
                     '${layers.length}/${widget.maxLayers}',
                     style: TextStyle(color: atLimit ? Colors.orangeAccent : Colors.white38, fontSize: 13),
                   ),
-                  if (!widget.isPremium && atLimit) ...[
-                    const SizedBox(width: 6),
-                    const Icon(Icons.lock, size: 13, color: Colors.orangeAccent),
-                  ],
                   const Spacer(),
                   IconButton(
                     icon: const Icon(Icons.add, color: Colors.orangeAccent),
@@ -90,16 +84,6 @@ class _LayersPanelState extends State<LayersPanel> {
                 ],
               ),
             ),
-            if (!widget.isPremium)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                child: Text(
-                  atLimit
-                      ? 'Free plan: up to ${widget.maxLayers} layers. Upgrade for up to 10 and layer merging.'
-                      : 'Free plan - upgrade for up to 10 layers and layer merging.',
-                  style: const TextStyle(color: Colors.white38, fontSize: 11),
-                ),
-              ),
             const Divider(color: Colors.white12, height: 1),
             Flexible(
               child: ReorderableListView.builder(
@@ -164,18 +148,7 @@ class _LayersPanelState extends State<LayersPanel> {
                         children: [
                           if (canMergeDown)
                             IconButton(
-                              icon: Stack(
-                                clipBehavior: Clip.none,
-                                children: [
-                                  const Icon(Icons.call_merge, color: Colors.white70),
-                                  if (!widget.isPremium)
-                                    const Positioned(
-                                      right: -2,
-                                      top: -2,
-                                      child: Icon(Icons.lock, size: 10, color: Colors.orangeAccent),
-                                    ),
-                                ],
-                              ),
+                              icon: const Icon(Icons.call_merge, color: Colors.white70),
                               tooltip: 'Merge down into layer below',
                               onPressed: _merging
                                   ? null

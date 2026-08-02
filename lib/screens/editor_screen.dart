@@ -7,14 +7,16 @@ import '../models/draw_op.dart';
 import '../models/draw_tool.dart';
 import '../models/frame_data.dart';
 import '../models/onion_skin_settings.dart';
+import '../models/shape_kind.dart';
 import '../models/stroke.dart';
 import '../rendering/onion_layer.dart';
+import '../services/audio_playback_service.dart';
 import '../services/export_service.dart';
 import '../services/fill_service.dart';
 import '../services/layer_merge_service.dart';
 import '../services/native_mp4_export_service.dart';
-import '../services/premium_service.dart';
 import '../services/rotoscope_import_service.dart';
+import '../widgets/audio_panel.dart';
 import '../widgets/drawing_canvas.dart';
 import '../widgets/editor_toolbar.dart';
 import '../widgets/layers_panel.dart';
@@ -40,11 +42,15 @@ class _EditorScreenState extends State<EditorScreen> {
   Color color = Colors.black;
   double strokeWidth = 6;
   DrawTool tool = DrawTool.pen;
+  ShapeKind shapeKind = ShapeKind.rectangle;
+  bool shapeFilled = false;
+  double textSize = 32;
   final OnionSkinSettings onionSettings = OnionSkinSettings();
   bool isPlaying = false;
   bool isFilling = false;
   FrameData? _clipboardFrame;
   Timer? _playTimer;
+  final AudioPlaybackService _audioPlayback = AudioPlaybackService();
 
   @override
   void initState() {
@@ -55,6 +61,7 @@ class _EditorScreenState extends State<EditorScreen> {
   @override
   void dispose() {
     _playTimer?.cancel();
+    _audioPlayback.dispose();
     super.dispose();
   }
 
@@ -100,6 +107,68 @@ class _EditorScreenState extends State<EditorScreen> {
 
   void _addStroke(Stroke stroke) {
     setState(() => currentFrame.layerOps[_safeActiveLayer].add(StrokeDrawOp(stroke)));
+  }
+
+  void _addShape(ShapeDrawOp shape) {
+    setState(() => currentFrame.layerOps[_safeActiveLayer].add(shape));
+  }
+
+  Future<void> _handleTextTap(Offset canvasPoint) async {
+    final controller = TextEditingController();
+    double localSize = textSize;
+
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Add text'),
+        content: StatefulBuilder(
+          builder: (context, setDialogState) => Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: controller,
+                autofocus: true,
+                maxLines: 3,
+                minLines: 1,
+                decoration: const InputDecoration(hintText: 'Type something...'),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  const Text('Size', style: TextStyle(fontSize: 12)),
+                  Expanded(
+                    child: Slider(
+                      value: localSize,
+                      min: 12,
+                      max: 96,
+                      divisions: 28,
+                      label: localSize.round().toString(),
+                      onChanged: (v) => setDialogState(() => localSize = v),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(context, controller.text), child: const Text('Add')),
+        ],
+      ),
+    );
+
+    if (result == null || result.trim().isEmpty || !mounted) return;
+
+    setState(() {
+      textSize = localSize;
+      currentFrame.layerOps[_safeActiveLayer].add(TextDrawOp(
+        text: result,
+        position: canvasPoint,
+        color: color,
+        fontSize: textSize,
+      ));
+    });
   }
 
   Future<void> _handleFillTap(Offset canvasPoint) async {
@@ -201,17 +270,28 @@ class _EditorScreenState extends State<EditorScreen> {
   void _togglePlay() {
     if (isPlaying) {
       _playTimer?.cancel();
+      _audioPlayback.pauseAll();
       setState(() => isPlaying = false);
       return;
     }
     setState(() => isPlaying = true);
+    _audioPlayback.playFrom(tracks: project.audioTracks, currentFrameIndex: currentIndex, fps: project.fps);
     final frameDuration = Duration(milliseconds: (1000 / project.fps).round());
     _playTimer = Timer.periodic(frameDuration, (_) {
-      setState(() => currentIndex = (currentIndex + 1) % project.frames.length);
+      setState(() {
+        final next = (currentIndex + 1) % project.frames.length;
+        if (next == 0 && project.frames.length > 1) {
+          // Looped back to the start - restart every track fresh
+          // rather than letting them fall out of sync over time.
+          _audioPlayback.stopAll();
+          _audioPlayback.playFrom(tracks: project.audioTracks, currentFrameIndex: 0, fps: project.fps);
+        } else {
+          _audioPlayback.checkStarts(tracks: project.audioTracks, currentFrameIndex: next);
+        }
+        currentIndex = next;
+      });
     });
   }
-
-  int get _maxLayers => PremiumService.instance.isPremium.value ? kPremiumMaxLayers : kFreeMaxLayers;
 
   void _openLayersPanel() {
     showModalBottomSheet(
@@ -221,8 +301,7 @@ class _EditorScreenState extends State<EditorScreen> {
       builder: (_) => LayersPanel(
         project: project,
         activeLayerIndex: _safeActiveLayer,
-        maxLayers: _maxLayers,
-        isPremium: PremiumService.instance.isPremium.value,
+        maxLayers: kMaxLayers,
         onSelectLayer: (i) => activeLayerIndex = i,
         onAddLayerRequested: _requestAddLayer,
         onMergeDownRequested: _requestMergeDown,
@@ -231,28 +310,29 @@ class _EditorScreenState extends State<EditorScreen> {
     );
   }
 
+  void _openAudioPanel() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => AudioPanel(
+        tracks: project.audioTracks,
+        currentFrameIndex: currentIndex,
+        onChanged: () => setState(() {}),
+      ),
+    );
+  }
+
   void _requestAddLayer() {
-    final added = project.addLayer(maxLayers: _maxLayers);
+    final added = project.addLayer(maxLayers: kMaxLayers);
     if (!added) {
-      _showPaywallDialog(
-        title: 'Layer limit reached',
-        body: PremiumService.instance.isPremium.value
-            ? 'You\'ve hit the $kPremiumMaxLayers-layer premium limit.'
-            : 'Free projects are limited to $kFreeMaxLayers layers. '
-                'Upgrade to Premium to use up to $kPremiumMaxLayers.',
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Layer limit reached ($kMaxLayers max)')),
       );
     }
   }
 
   Future<void> _requestMergeDown(int index) async {
-    if (!PremiumService.instance.isPremium.value) {
-      _showPaywallDialog(
-        title: 'Layer merging is a premium feature',
-        body: 'Upgrade to Premium to merge layers together.',
-      );
-      return;
-    }
-
     final confirmed = await _confirmMerge(index);
     if (!confirmed || !mounted) return;
 
@@ -289,55 +369,6 @@ class _EditorScreenState extends State<EditorScreen> {
       ),
     );
     return result ?? false;
-  }
-
-  void _showPaywallDialog({required String title, required String body}) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(title),
-        content: Text(body),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Not now')),
-          FilledButton(
-            onPressed: () {
-              Navigator.pop(context);
-              _showUpgradeFlow();
-            },
-            child: const Text('Upgrade'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _showUpgradeFlow() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Upgrade to Premium'),
-        content: const Text(
-          'This demo build doesn\'t include a real payment flow. Tap "Simulate purchase" to '
-          'unlock Premium locally for this session (up to $kPremiumMaxLayers layers + layer '
-          'merging), or wire up the in_app_purchase package for real billing - see '
-          'PremiumService for where that plugs in.',
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-          FilledButton(
-            onPressed: () {
-              PremiumService.instance.unlock();
-              Navigator.pop(context);
-              setState(() {});
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Premium unlocked (simulated) 🎉')),
-              );
-            },
-            child: const Text('Simulate purchase'),
-          ),
-        ],
-      ),
-    );
   }
 
   void _openOnionSettings() {
@@ -496,6 +527,7 @@ class _EditorScreenState extends State<EditorScreen> {
 
   Future<void> _handleExportAction(_ExportAction action) async {
     _playTimer?.cancel();
+    _audioPlayback.stopAll();
     setState(() => isPlaying = false);
 
     final String label = switch (action) {
@@ -542,14 +574,9 @@ class _EditorScreenState extends State<EditorScreen> {
         backgroundColor: const Color(0xFF1E1E1E),
         actions: [
           IconButton(
-            onPressed: PremiumService.instance.isPremium.value
-                ? null
-                : _showUpgradeFlow,
-            icon: Icon(
-              PremiumService.instance.isPremium.value ? Icons.workspace_premium : Icons.workspace_premium_outlined,
-              color: PremiumService.instance.isPremium.value ? Colors.orangeAccent : Colors.white70,
-            ),
-            tooltip: PremiumService.instance.isPremium.value ? 'Premium unlocked' : 'Upgrade to Premium',
+            icon: const Icon(Icons.audiotrack, color: Colors.white70),
+            tooltip: 'Audio',
+            onPressed: _openAudioPanel,
           ),
           PopupMenuButton<_ImportAction>(
             icon: const Icon(Icons.add_photo_alternate_outlined, color: Colors.white70),
@@ -592,8 +619,12 @@ class _EditorScreenState extends State<EditorScreen> {
                       color: color,
                       strokeWidth: strokeWidth,
                       tool: tool,
+                      shapeKind: shapeKind,
+                      shapeFilled: shapeFilled,
                       onStrokeFinished: _addStroke,
                       onFillTap: _handleFillTap,
+                      onShapeFinished: _addShape,
+                      onTextTap: _handleTextTap,
                     ),
                     if (isFilling)
                       Container(
@@ -608,14 +639,21 @@ class _EditorScreenState extends State<EditorScreen> {
           EditorToolbar(
             selectedColor: color,
             tool: tool,
+            shapeKind: shapeKind,
+            shapeFilled: shapeFilled,
             strokeWidth: strokeWidth,
             onionEnabled: onionSettings.enabled,
             isPlaying: isPlaying,
             layerCount: project.layers.length,
-            maxLayers: _maxLayers,
+            maxLayers: kMaxLayers,
             activeLayerName: project.layers[_safeActiveLayer].name,
             onColorSelected: (c) => setState(() => color = c),
             onSelectTool: (t) => setState(() => tool = t),
+            onSelectShape: (k) => setState(() {
+              shapeKind = k;
+              tool = DrawTool.shape;
+            }),
+            onToggleShapeFilled: () => setState(() => shapeFilled = !shapeFilled),
             onStrokeWidthChanged: (v) => setState(() => strokeWidth = v),
             onToggleOnionSkin: () => setState(() => onionSettings.enabled = !onionSettings.enabled),
             onOpenOnionSettings: _openOnionSettings,
@@ -632,6 +670,7 @@ class _EditorScreenState extends State<EditorScreen> {
             hasClipboard: _clipboardFrame != null,
             onSelect: (i) {
               _playTimer?.cancel();
+              _audioPlayback.stopAll();
               setState(() {
                 isPlaying = false;
                 currentIndex = i;

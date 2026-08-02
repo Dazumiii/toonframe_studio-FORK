@@ -1,3 +1,4 @@
+import 'audio_track.dart';
 import 'frame_data.dart';
 import 'layer_info.dart';
 
@@ -5,19 +6,21 @@ class AnimationProject {
   String name;
   List<LayerInfo> layers;
   List<FrameData> frames;
+  List<AudioTrack> audioTracks;
   int fps;
 
   AnimationProject({required this.name, this.fps = 8})
       : layers = [LayerInfo(name: 'Layer 1')],
-        frames = [FrameData(layerCount: 1)];
+        frames = [FrameData(layerCount: 1)],
+        audioTracks = [];
 
   /// Creates a new blank frame that already matches the current layer
   /// stack (same number of layers as every other frame).
   FrameData newFrame() => FrameData(layerCount: layers.length);
 
   /// Adds a new layer, unless [maxLayers] is given and the project is
-  /// already at that limit (used to enforce the free/premium layer
-  /// cap - see PremiumService). Returns whether a layer was added.
+  /// already at that limit (used to enforce the layer soft cap, see
+  /// kMaxLayers). Returns whether a layer was added.
   bool addLayer({int? maxLayers}) {
     if (maxLayers != null && layers.length >= maxLayers) return false;
     layers.add(LayerInfo(name: 'Layer ${layers.length + 1}'));

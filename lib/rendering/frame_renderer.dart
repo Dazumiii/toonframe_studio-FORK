@@ -4,6 +4,7 @@ import '../constants.dart';
 import '../models/draw_op.dart';
 import '../models/frame_data.dart';
 import '../models/layer_info.dart';
+import '../models/shape_kind.dart';
 import '../models/stroke.dart';
 
 /// Shared rendering logic used by the live canvas painter, timeline
@@ -76,11 +77,56 @@ class FrameRenderer {
       switch (op) {
         case StrokeDrawOp():
           _paintStroke(canvas, op.stroke, sx, sy);
+        case ShapeDrawOp():
+          _paintShape(canvas, op, sx, sy);
+        case TextDrawOp():
+          _paintText(canvas, op, sx, sy);
         case FillDrawOp():
           _paintRaster(canvas, op.image, sx, sy);
         case ImageDrawOp():
           _paintRaster(canvas, op.image, sx, sy);
       }
+    }
+  }
+
+  static void _paintText(Canvas canvas, TextDrawOp textOp, double sx, double sy) {
+    final scale = (sx + sy) / 2;
+    final textPainter = TextPainter(
+      text: TextSpan(
+        text: textOp.text,
+        style: TextStyle(
+          color: textOp.color,
+          fontSize: textOp.fontSize * scale,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    );
+    textPainter.layout();
+    textPainter.paint(canvas, Offset(textOp.position.dx * sx, textOp.position.dy * sy));
+  }
+
+  static void _paintShape(Canvas canvas, ShapeDrawOp shape, double sx, double sy) {
+    final p1 = Offset(shape.start.dx * sx, shape.start.dy * sy);
+    final p2 = Offset(shape.end.dx * sx, shape.end.dy * sy);
+    final rect = Rect.fromPoints(p1, p2);
+
+    final paint = Paint()
+      ..color = shape.color
+      ..strokeWidth = shape.strokeWidth * ((sx + sy) / 2)
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      // A line can't be "filled" - always stroke it regardless of the
+      // filled flag.
+      ..style = (shape.filled && shape.kind != ShapeKind.line) ? PaintingStyle.fill : PaintingStyle.stroke;
+
+    switch (shape.kind) {
+      case ShapeKind.rectangle:
+        canvas.drawRect(rect, paint);
+      case ShapeKind.ellipse:
+        canvas.drawOval(rect, paint);
+      case ShapeKind.line:
+        canvas.drawLine(p1, p2, paint);
     }
   }
 
