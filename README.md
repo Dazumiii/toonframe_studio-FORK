@@ -5,7 +5,14 @@ Flutter (no paid packages, no Firebase). It runs on Android (and iOS/desktop too
 Flutter/Dart).
 
 ## Features implemented
-- **Freehand drawing** — pen tool with adjustable brush size and a 10-color palette
+- **Freehand drawing** — four brush styles under one pen tool: **Pencil** (thin, slightly
+  translucent), **Pen** (solid, full opacity), **Marker** (bold, a little translucent), and
+  **Highlighter** (broad, flat-tipped, see-through). Tap the pen icon to draw with pen; long-press
+  it to open the brush panel and switch styles. A 10-color palette and adjustable width apply to
+  whichever style is active.
+  - **Custom brushes** — save your current style + color + width combo as a named preset from the
+    brush panel, then reapply it in one tap later. Presets are **in-memory only for this app
+    session** — see "A note on custom brush persistence" below.
 - **Eraser tool**
 - **Fill bucket** — tap any enclosed region to flood-fill it with the selected color. Works by
   rasterizing the active layer's current artwork and running the `image` package's `fillFlood`,
@@ -44,6 +51,13 @@ Flutter/Dart).
   (`TextDrawOp`) — same undo/layering/onion-skin/export behavior as everything else. There's no
   in-place editing after placement (no drag-to-reposition or re-edit) — undo and re-add if you want
   to change it.
+- **Lasso select/transform** — drag a freeform loop around anything on the active layer (strokes,
+  shapes, text, fills — the lasso works on pixels, so it doesn't care how something was drawn),
+  release to cut it out, then drag/pinch/twist the floating selection to move, scale, and rotate
+  it. Confirm (✓) to bake it back into the layer, Cancel (✕) to put everything back exactly as it
+  was, or Delete (🗑) to remove it for good. See "A note on the lasso implementation" below for an
+  important tradeoff: confirming a move flattens that layer's stroke-by-stroke undo history in the
+  affected area.
 - **Frame-by-frame timeline** — a visual filmstrip with live thumbnails (composited across all
   visible layers) for managing frames:
   - **Drag to reorder** — long-press and drag any frame thumbnail to a new position
@@ -82,11 +96,6 @@ Flutter/Dart).
 ## What's not included (ideas for you to extend)
 - **iOS MP4 export** — the native encoder is Android-only for now (see "In-app MP4 export"); iOS
   needs a separate `AVAssetWriter`-based implementation in Swift
-- **Lasso select/transform** and **custom brushes** — the two remaining items from the original
-  brushes-and-tools list that aren't built yet. Lasso in particular is a bigger lift than it
-  looks: it needs a selection region, then move/scale/rotate of whatever raster or vector content
-  falls inside it, which doesn't fit the simple "one more DrawOp type" pattern the other tools
-  used here.
 - Trimming/waveform view for audio tracks (a track always plays from its own start to its own end
   once triggered — no in/out point editing)
 - A real, licensed sound-effect library (see "A note on the sound library")
@@ -116,6 +125,17 @@ not included in this zip):
 <key>NSPhotoLibraryUsageInfo</key>
 <string>To import a reference photo or video for tracing.</string>
 ```
+
+## A note on custom brush persistence
+`BrushPresetService` holds saved brushes in a plain in-memory list — no `shared_preferences`, no
+database, nothing written to disk. Saved brushes disappear when the app restarts. This mirrors the
+same scope choice made elsewhere in this project (see "A note on voiceover recording" for the same
+pattern with a different tradeoff): getting a feature working end-to-end first, with a clearly
+marked seam for real persistence later, rather than pulling in a storage dependency before you've
+decided you actually want one. If you want presets to survive a restart, `shared_preferences` is
+about as safe a package choice as Flutter has — the three methods on `BrushPresetService` (`add`,
+`removeAt`, and reading `presets`) are the only places that would need to change; nothing else in
+the app talks to storage directly.
 
 ## A note on voiceover recording
 This originally used the `record` package for in-app microphone recording. **It doesn't build**:
@@ -151,6 +171,33 @@ SFX/voiceover that doesn't need frame-perfect sync; if you need tighter guarante
 pieces, you'd want to replace the frame timer with a proper shared clock (e.g. driving both frame
 advancement and audio position off `Stopwatch` elapsed time each tick, rather than just counting
 timer fires).
+
+## A note on the lasso implementation
+This is a **raster** lasso, not a vector one, and that's a deliberate scope choice worth
+understanding before you rely on it. A "proper" vector lasso would let you select individual
+strokes/shapes/text as distinct objects and move just those. What's here instead: releasing the
+lasso rasterizes the entire active layer, cuts the lassoed pixels into a floating image, and
+leaves an "everything else" image behind. That means:
+- It works uniformly on strokes, shapes, text, fills, and imported images, since they all become
+  pixels — nothing is excluded or handled specially.
+- Confirming a move **flattens that layer's undo history in the affected area** into two images.
+  You can no longer undo the strokes underneath the selection one at a time after that — only
+  Cancel (before confirming) gets you back to the exact original state.
+- Live dragging/pinching/rotating is cheap (it's just a `Canvas.drawImage` with a transform applied
+  each paint call — no re-rasterizing while you interact with it). The one-time rasterization
+  happens only twice: once when you release the lasso, and once when you confirm the final
+  position.
+- I couldn't test this on a real device from this sandbox, same as everything else in this
+  project — the individual pieces (`Path.addPolygon`, `BlendMode.clear` for the cutout,
+  `ScaleGestureDetector` for combined pan/pinch/rotate) are all standard, well-documented Flutter
+  APIs, not fragile or exotic, but the interaction as a whole is the most complex thing built here
+  and deserves real testing before you trust it in front of users.
+
+If you want true vector selection later, the natural extension point is per-op hit-testing (does
+this `Stroke`'s point cloud, or this `ShapeDrawOp`'s bounds, intersect the lasso polygon?) followed
+by applying a `Matrix4` transform to just the selected ops' geometry — a bigger rewrite of the
+selection logic, but the existing `DrawOp` model already separates each op's data cleanly enough to
+support it.
 
 ## A note on layer merging
 `LayerMergeService.mergeDown` rasterizes both merged layers' current opacity/visibility into a
@@ -236,17 +283,20 @@ message and points you at PNG-sequence export instead — it won't crash, just g
   yet, and what to verify before adding it back)
 - Show audio track markers on the timeline itself (currently the audio panel is the only place
   a track's start frame is visible)
-- Build lasso select/transform and custom brushes, the two remaining brushes-and-tools items
+- Build lasso select/transform, the one remaining brushes-and-tools item
 
 ## Project structure
 ```
 lib/
   constants.dart              # fixed internal canvas resolution
   models/
-    stroke.dart                # a single pen/eraser stroke
+    stroke.dart                # a single pen/eraser stroke, now carries a BrushStyle
+    brush_style.dart             # BrushStyle enum: pencil / pen / marker / highlighter
+    brush_preset.dart            # BrushPreset: a named saved style + color + width combo
     draw_op.dart                # StrokeDrawOp / ShapeDrawOp / TextDrawOp / FillDrawOp / ImageDrawOp
-    draw_tool.dart              # DrawTool enum: pen / eraser / fill / shape / text
+    draw_tool.dart              # DrawTool enum: pen / eraser / fill / shape / text / lasso
     shape_kind.dart              # ShapeKind enum: rectangle / ellipse / line
+    lasso_selection.dart         # transient state for an in-progress lasso move/scale/rotate
     layer_info.dart             # per-layer name/visibility/opacity (global, shared by all frames)
     onion_skin_settings.dart    # onion skin: enabled, frame range before/after, opacity
     frame_data.dart            # per-layer DrawOp lists for one frame
@@ -262,13 +312,16 @@ lib/
     frame_painter.dart         # CustomPainter wrapper around FrameRenderer
     drawing_canvas.dart        # gesture handling -> strokes on the active layer, or fill taps
     layers_panel.dart          # bottom sheet: select/reorder/toggle/opacity/add/delete layers
+    brush_panel.dart             # bottom sheet: pick brush style, save/apply/delete custom brushes
     onion_skin_panel.dart       # bottom sheet: onion skin on/off, frame range, opacity
     audio_panel.dart             # bottom sheet: import audio, sound library, per-track controls
     timeline_strip.dart        # bottom filmstrip UI
     editor_toolbar.dart        # pen/eraser/fill/color/undo/layers/play controls
   services/
     fill_service.dart          # rasterize a layer + flood fill (paint bucket)
+    brush_preset_service.dart   # in-memory store of the user's custom saved brush presets
     layer_merge_service.dart   # flatten a layer down into the one below it
+    lasso_service.dart          # rasterize/cut/re-composite a lasso selection
     rotoscope_import_service.dart  # pick photo/video, extract & fit reference frames
     export_service.dart        # rasterize composited frames -> GIF / PNG-sequence ZIP
     native_video_encoder.dart  # MethodChannel wrapper -> android_native/Mp4Encoder.kt

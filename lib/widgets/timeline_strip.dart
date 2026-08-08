@@ -75,10 +75,24 @@ class TimelineStrip extends StatelessWidget {
                     ),
                   ),
                 ),
-                IconButton(
-                  icon: const Icon(Icons.add_box, color: Colors.white, size: 28),
-                  tooltip: 'Add frame',
-                  onPressed: onAdd,
+                Padding(
+                  padding: const EdgeInsets.only(right: 4),
+                  child: Tooltip(
+                    message: 'Add frame',
+                    child: Material(
+                      color: Colors.orangeAccent,
+                      shape: const CircleBorder(),
+                      child: InkWell(
+                        customBorder: const CircleBorder(),
+                        onTap: onAdd,
+                        child: const SizedBox(
+                          width: 48,
+                          height: 48,
+                          child: Icon(Icons.add, color: Colors.black, size: 28),
+                        ),
+                      ),
+                    ),
+                  ),
                 ),
               ],
             ),
@@ -210,8 +224,8 @@ class _FrameThumb extends StatelessWidget {
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        width: 64,
-        margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 10),
+        width: 72,
+        margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
         decoration: BoxDecoration(
           border: Border.all(
             color: selected ? Colors.orangeAccent : Colors.white24,
@@ -254,12 +268,14 @@ class _FrameThumb extends StatelessWidget {
                 onTap: onMenu,
                 behavior: HitTestBehavior.opaque,
                 child: Container(
-                  padding: const EdgeInsets.all(2),
+                  width: 32,
+                  height: 32,
+                  alignment: Alignment.center,
                   decoration: const BoxDecoration(
-                    color: Colors.black45,
-                    borderRadius: BorderRadius.only(bottomLeft: Radius.circular(4)),
+                    color: Colors.black54,
+                    borderRadius: BorderRadius.only(bottomLeft: Radius.circular(6)),
                   ),
-                  child: const Icon(Icons.more_vert, size: 14, color: Colors.white),
+                  child: const Icon(Icons.more_vert, size: 20, color: Colors.white),
                 ),
               ),
             ),

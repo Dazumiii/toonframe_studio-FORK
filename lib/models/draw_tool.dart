@@ -1,2 +1,2 @@
 /// The active drawing tool.
-enum DrawTool { pen, eraser, fill, shape, text }
+enum DrawTool { pen, eraser, fill, shape, text, lasso }

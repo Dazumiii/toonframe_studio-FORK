@@ -3,9 +3,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../constants.dart';
 import '../models/animation_project.dart';
+import '../models/brush_preset.dart';
+import '../models/brush_style.dart';
 import '../models/draw_op.dart';
 import '../models/draw_tool.dart';
 import '../models/frame_data.dart';
+import '../models/lasso_selection.dart';
 import '../models/onion_skin_settings.dart';
 import '../models/shape_kind.dart';
 import '../models/stroke.dart';
@@ -13,10 +16,12 @@ import '../rendering/onion_layer.dart';
 import '../services/audio_playback_service.dart';
 import '../services/export_service.dart';
 import '../services/fill_service.dart';
+import '../services/lasso_service.dart';
 import '../services/layer_merge_service.dart';
 import '../services/native_mp4_export_service.dart';
 import '../services/rotoscope_import_service.dart';
 import '../widgets/audio_panel.dart';
+import '../widgets/brush_panel.dart';
 import '../widgets/drawing_canvas.dart';
 import '../widgets/editor_toolbar.dart';
 import '../widgets/layers_panel.dart';
@@ -42,12 +47,15 @@ class _EditorScreenState extends State<EditorScreen> {
   Color color = Colors.black;
   double strokeWidth = 6;
   DrawTool tool = DrawTool.pen;
+  BrushStyle brushStyle = BrushStyle.pen;
+  LassoSelection? lassoSelection;
   ShapeKind shapeKind = ShapeKind.rectangle;
   bool shapeFilled = false;
   double textSize = 32;
   final OnionSkinSettings onionSettings = OnionSkinSettings();
   bool isPlaying = false;
   bool isFilling = false;
+  bool isLassoBusy = false;
   FrameData? _clipboardFrame;
   Timer? _playTimer;
   final AudioPlaybackService _audioPlayback = AudioPlaybackService();
@@ -193,6 +201,105 @@ class _EditorScreenState extends State<EditorScreen> {
     }
   }
 
+  Future<void> _handleLassoFinished(List<Offset> path) async {
+    if (isLassoBusy) return;
+    setState(() => isLassoBusy = true);
+    try {
+      final ops = currentFrame.layerOps[_safeActiveLayer];
+      final originalOps = List<DrawOp>.of(ops);
+      final result = await LassoService.cut(ops, path);
+      if (!mounted) return;
+
+      setState(() {
+        currentFrame.layerOps[_safeActiveLayer] = [ImageDrawOp(result.remainderImage)];
+        lassoSelection = LassoSelection(
+          selectionImage: result.selectionImage,
+          pivot: result.pivot,
+          originalLayerOps: originalOps,
+        );
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Drag, pinch, or twist to move the selection. Confirming flattens this '
+            'layer\'s strokes in that area into two images.',
+          ),
+          duration: Duration(seconds: 4),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Lasso selection failed: $e')));
+    } finally {
+      if (mounted) setState(() => isLassoBusy = false);
+    }
+  }
+
+  void _updateLassoTransform(Offset translation, double scale, double rotation) {
+    final selection = lassoSelection;
+    if (selection == null) return;
+    setState(() {
+      selection.translation = translation;
+      selection.scale = scale;
+      selection.rotation = rotation;
+    });
+  }
+
+  Future<void> _confirmLassoSelection() async {
+    final selection = lassoSelection;
+    if (selection == null || isLassoBusy) return;
+    setState(() => isLassoBusy = true);
+    try {
+      final finalImage = await LassoService.renderTransformed(
+        selectionImage: selection.selectionImage,
+        pivot: selection.pivot,
+        translation: selection.translation,
+        scale: selection.scale,
+        rotation: selection.rotation,
+      );
+      if (!mounted) return;
+      setState(() {
+        currentFrame.layerOps[_safeActiveLayer].add(ImageDrawOp(finalImage));
+        lassoSelection = null;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Couldn\'t place selection: $e')));
+    } finally {
+      if (mounted) setState(() => isLassoBusy = false);
+    }
+  }
+
+  void _cancelLassoSelection() {
+    final selection = lassoSelection;
+    if (selection == null) return;
+    setState(() {
+      currentFrame.layerOps[_safeActiveLayer] = List.of(selection.originalLayerOps);
+      lassoSelection = null;
+    });
+  }
+
+  void _deleteLassoSelection() {
+    if (lassoSelection == null) return;
+    // Keep the remainder-only ops (already in place) and just drop the
+    // floating selection - an actual delete, not a restore.
+    setState(() => lassoSelection = null);
+  }
+
+  /// A floating lasso selection is tied to a specific frame+layer's
+  /// ops. Switching frames, switching the active layer, or starting
+  /// playback out from under it would leave it pointing at the wrong
+  /// place - so anything that changes `currentIndex`/`activeLayerIndex`
+  /// calls this first to cleanly restore the original ops before the
+  /// switch happens.
+  void _discardFloatingLassoIfAny() {
+    final selection = lassoSelection;
+    if (selection == null) return;
+    currentFrame.layerOps[_safeActiveLayer] = List.of(selection.originalLayerOps);
+    lassoSelection = null;
+  }
+
   void _undo() {
     final ops = currentFrame.layerOps[_safeActiveLayer];
     if (ops.isEmpty) return;
@@ -274,7 +381,10 @@ class _EditorScreenState extends State<EditorScreen> {
       setState(() => isPlaying = false);
       return;
     }
-    setState(() => isPlaying = true);
+    setState(() {
+      _discardFloatingLassoIfAny();
+      isPlaying = true;
+    });
     _audioPlayback.playFrom(tracks: project.audioTracks, currentFrameIndex: currentIndex, fps: project.fps);
     final frameDuration = Duration(milliseconds: (1000 / project.fps).round());
     _playTimer = Timer.periodic(frameDuration, (_) {
@@ -302,7 +412,10 @@ class _EditorScreenState extends State<EditorScreen> {
         project: project,
         activeLayerIndex: _safeActiveLayer,
         maxLayers: kMaxLayers,
-        onSelectLayer: (i) => activeLayerIndex = i,
+        onSelectLayer: (i) {
+          _discardFloatingLassoIfAny();
+          activeLayerIndex = i;
+        },
         onAddLayerRequested: _requestAddLayer,
         onMergeDownRequested: _requestMergeDown,
         onChanged: () => setState(() {}),
@@ -319,6 +432,33 @@ class _EditorScreenState extends State<EditorScreen> {
         tracks: project.audioTracks,
         currentFrameIndex: currentIndex,
         onChanged: () => setState(() {}),
+      ),
+    );
+  }
+
+  void _openBrushPanel() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => BrushPanel(
+        currentStyle: brushStyle,
+        currentColor: color,
+        currentWidth: strokeWidth,
+        onSelectStyle: (style) {
+          setState(() {
+            brushStyle = style;
+            tool = DrawTool.pen;
+          });
+        },
+        onApplyPreset: (preset) {
+          setState(() {
+            brushStyle = preset.style;
+            color = preset.color;
+            strokeWidth = preset.width;
+            tool = DrawTool.pen;
+          });
+        },
       ),
     );
   }
@@ -565,6 +705,25 @@ class _EditorScreenState extends State<EditorScreen> {
     }
   }
 
+  Widget _lassoActionButton({
+    required IconData icon,
+    required Color color,
+    required String tooltip,
+    required VoidCallback onPressed,
+    Color backgroundColor = Colors.black87,
+  }) {
+    return Material(
+      color: backgroundColor,
+      shape: const CircleBorder(),
+      child: IconButton(
+        icon: Icon(icon, color: color, size: 22),
+        tooltip: tooltip,
+        onPressed: onPressed,
+        style: IconButton.styleFrom(minimumSize: const Size(44, 44)),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -619,17 +778,52 @@ class _EditorScreenState extends State<EditorScreen> {
                       color: color,
                       strokeWidth: strokeWidth,
                       tool: tool,
+                      brushStyle: brushStyle,
                       shapeKind: shapeKind,
                       shapeFilled: shapeFilled,
+                      lassoSelection: lassoSelection,
                       onStrokeFinished: _addStroke,
                       onFillTap: _handleFillTap,
                       onShapeFinished: _addShape,
                       onTextTap: _handleTextTap,
+                      onLassoFinished: _handleLassoFinished,
+                      onLassoTransformChanged: _updateLassoTransform,
                     ),
-                    if (isFilling)
+                    if (isFilling || isLassoBusy)
                       Container(
                         color: Colors.black45,
                         child: const CircularProgressIndicator(color: Colors.orangeAccent),
+                      ),
+                    if (lassoSelection != null && !isLassoBusy)
+                      Positioned(
+                        top: 8,
+                        right: 8,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            _lassoActionButton(
+                              icon: Icons.delete_outline,
+                              color: Colors.redAccent,
+                              tooltip: 'Delete selection',
+                              onPressed: _deleteLassoSelection,
+                            ),
+                            const SizedBox(width: 6),
+                            _lassoActionButton(
+                              icon: Icons.close,
+                              color: Colors.white,
+                              tooltip: 'Cancel (restore original)',
+                              onPressed: _cancelLassoSelection,
+                            ),
+                            const SizedBox(width: 6),
+                            _lassoActionButton(
+                              icon: Icons.check,
+                              color: Colors.black,
+                              backgroundColor: Colors.orangeAccent,
+                              tooltip: 'Confirm move',
+                              onPressed: _confirmLassoSelection,
+                            ),
+                          ],
+                        ),
                       ),
                   ],
                 ),
@@ -639,6 +833,7 @@ class _EditorScreenState extends State<EditorScreen> {
           EditorToolbar(
             selectedColor: color,
             tool: tool,
+            brushStyle: brushStyle,
             shapeKind: shapeKind,
             shapeFilled: shapeFilled,
             strokeWidth: strokeWidth,
@@ -649,6 +844,7 @@ class _EditorScreenState extends State<EditorScreen> {
             activeLayerName: project.layers[_safeActiveLayer].name,
             onColorSelected: (c) => setState(() => color = c),
             onSelectTool: (t) => setState(() => tool = t),
+            onOpenBrushPanel: _openBrushPanel,
             onSelectShape: (k) => setState(() {
               shapeKind = k;
               tool = DrawTool.shape;
@@ -672,6 +868,7 @@ class _EditorScreenState extends State<EditorScreen> {
               _playTimer?.cancel();
               _audioPlayback.stopAll();
               setState(() {
+                _discardFloatingLassoIfAny();
                 isPlaying = false;
                 currentIndex = i;
               });

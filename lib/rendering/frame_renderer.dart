@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'dart:ui' as ui;
 import '../constants.dart';
+import '../models/brush_style.dart';
 import '../models/draw_op.dart';
 import '../models/frame_data.dart';
 import '../models/layer_info.dart';
@@ -142,10 +143,27 @@ class FrameRenderer {
   static void _paintStroke(Canvas canvas, Stroke stroke, double sx, double sy) {
     if (stroke.points.isEmpty) return;
 
+    final scale = (sx + sy) / 2;
+    final opacity = stroke.isEraser ? 1.0 : _opacityFor(stroke.brushStyle);
+    final widthMultiplier = _widthMultiplierFor(stroke.brushStyle);
+    final effectiveWidth = stroke.width * scale * widthMultiplier;
+    final cap = _capFor(stroke.brushStyle);
+
+    // Translucent styles (marker/highlighter) need to render at full
+    // opacity onto an offscreen layer first, then composite that
+    // layer at the target opacity - otherwise a stroke's own
+    // self-intersections (e.g. a loop) would double up and look
+    // darker than the rest of the stroke.
+    final needsLayer = opacity < 1.0;
+    if (needsLayer) {
+      final bounds = Rect.fromLTWH(0, 0, kCanvasWidth * sx, kCanvasHeight * sy);
+      canvas.saveLayer(bounds, Paint()..color = Colors.white.withOpacity(opacity));
+    }
+
     final paint = Paint()
       ..color = stroke.isEraser ? Colors.white : stroke.color
-      ..strokeWidth = stroke.width * ((sx + sy) / 2)
-      ..strokeCap = StrokeCap.round
+      ..strokeWidth = effectiveWidth
+      ..strokeCap = cap
       ..strokeJoin = StrokeJoin.round
       ..style = PaintingStyle.stroke;
 
@@ -153,16 +171,42 @@ class FrameRenderer {
       final p = stroke.points.first;
       canvas.drawCircle(
         Offset(p.dx * sx, p.dy * sy),
-        (stroke.width * ((sx + sy) / 2)) / 2,
+        effectiveWidth / 2,
         paint..style = PaintingStyle.fill,
       );
-      return;
+    } else {
+      final path = Path()..moveTo(stroke.points[0].dx * sx, stroke.points[0].dy * sy);
+      for (int i = 1; i < stroke.points.length; i++) {
+        path.lineTo(stroke.points[i].dx * sx, stroke.points[i].dy * sy);
+      }
+      canvas.drawPath(path, paint);
     }
 
-    final path = Path()..moveTo(stroke.points[0].dx * sx, stroke.points[0].dy * sy);
-    for (int i = 1; i < stroke.points.length; i++) {
-      path.lineTo(stroke.points[i].dx * sx, stroke.points[i].dy * sy);
-    }
-    canvas.drawPath(path, paint);
+    if (needsLayer) canvas.restore();
+  }
+
+  static double _opacityFor(BrushStyle style) {
+    return switch (style) {
+      BrushStyle.pencil => 0.85,
+      BrushStyle.pen => 1.0,
+      BrushStyle.marker => 0.8,
+      BrushStyle.highlighter => 0.35,
+    };
+  }
+
+  static double _widthMultiplierFor(BrushStyle style) {
+    return switch (style) {
+      BrushStyle.pencil => 0.6,
+      BrushStyle.pen => 1.0,
+      BrushStyle.marker => 1.7,
+      BrushStyle.highlighter => 2.8,
+    };
+  }
+
+  static StrokeCap _capFor(BrushStyle style) {
+    return switch (style) {
+      BrushStyle.highlighter => StrokeCap.square,
+      _ => StrokeCap.round,
+    };
   }
 }
