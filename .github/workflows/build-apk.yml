@@ -1,0 +1,46 @@
+name: Build ToonFrame APK
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar proyecto
+        uses: actions/checkout@v4
+
+      - name: Instalar Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Instalar Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Verificar Flutter
+        run: flutter --version
+
+      - name: Instalar dependencias
+        run: flutter pub get
+
+      - name: Preparar Android
+        run: |
+          if [ ! -d android ]; then
+            flutter create --platforms=android .
+          fi
+
+      - name: Compilar APK
+        run: flutter build apk --debug
+
+      - name: Guardar APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ToonFrame-Studio-APK
+          path: build/app/outputs/flutter-apk/app-debug.apk
+          if-no-files-found: error
